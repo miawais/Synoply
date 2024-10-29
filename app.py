@@ -1,5 +1,6 @@
 import csv
 import time
+import streamlit as st
 from collections import defaultdict
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
@@ -11,11 +12,12 @@ from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.keys import Keys
 from webdriver_manager.chrome import ChromeDriverManager
 from datetime import datetime
-import tkinter as tk
-from tkinter import filedialog
+from langchain_ollama import OllamaLLM
+from langchain_core.output_parsers import StrOutputParser, JsonOutputParser
+from langchain_core.prompts import ChatPromptTemplate
 
+# Function to check if the timestamp is today's date
 def is_today(timestamp_str):
-    # New format: "10:06 PM, 10/14/2024"
     try:
         message_date = datetime.strptime(timestamp_str, "%I:%M %p, %m/%d/%Y").date()
         return message_date == datetime.today().date()
@@ -23,6 +25,7 @@ def is_today(timestamp_str):
         print(f"Error parsing timestamp: {timestamp_str}")
         return False
 
+# WhatsApp scraper class
 class WhatsAppScraper:
     def __init__(self):
         self.chrome_options = Options()
@@ -69,7 +72,7 @@ class WhatsAppScraper:
         except:
             return None
 
-    def scrape_whatsapp_chat(self, chat_name, senders):
+    def scrape_whatsapp_chat(self, chat_name):
         complete_chat = []
         print(f"Starting scraping for chat: {chat_name}")
 
@@ -101,7 +104,7 @@ class WhatsAppScraper:
 
             time.sleep(3)
             stop_text = 'YESTERDAY'
-            self.__scrollToView(stop_text)  # Scroll to find 'YESTERDAY'
+            self.__scrollToView(stop_text)
 
             print("Extracting messages...")
             messages = self.driver.find_elements(
@@ -118,9 +121,6 @@ class WhatsAppScraper:
                         timestamp_full = timestamp_element.get_attribute('data-pre-plain-text')
                         timestamp = timestamp_full.split(']')[0].strip('[')
 
-                        contact_name = self.get_sender_name(message)  # Get sender name
-
-                        # Check if the message is from today
                         if is_today(timestamp):
                             complete_chat.append(text)
                         else:
@@ -132,14 +132,9 @@ class WhatsAppScraper:
                     print(f"Error extracting message {idx}: {e}")
                     continue
 
-            # Open the file in write mode
-            with open('whatsapp_chat.txt', 'w', encoding='utf-8') as file:
-                # Write each string in the data list to the file
-                for msg in complete_chat:
-                    file.write(msg + '\n')  # Adding a newline character after each line
+            print("Chat extraction done and saved in memory. Starting summarization...")
 
-            print("Chat has been saved to whatsapp_chat.txt")
-            print(f"Scraping completed and saved for chat: {chat_name}")
+            return complete_chat  # Return the collected chat messages
 
         except Exception as e:
             print(f"An error occurred while scraping chat {chat_name}: {e}")
@@ -150,30 +145,54 @@ class WhatsAppScraper:
             self.driver.quit()
         print("WebDriver closed.")
 
-# Main function for starting the scraping process
-def start_scraping_for_meetings_and_sales(senders):
-    scraper = WhatsAppScraper()
-    chat_names = ["Nov27"]
+# Function to summarize messages
+def summarize_messages(messages):
+    system_prompt = '''
+    You are a helpful assistant that summarizes WhatsApp messages effectively.
+    '''
 
-    for chat_name in chat_names:
-        scraper.scrape_whatsapp_chat(chat_name, senders)
-        
-    print("Data processing and saving complete.")
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            ("system", system_prompt),
+            ("user", "Message: {message}")
+        ]
+    )
 
-# GUI for selecting files
-def open_file_dialog():
-    root = tk.Tk()
-    root.withdraw()
-    return filedialog.askopenfilename()
+    combined_messages = "\n".join(messages)
 
-def save_file_dialog():
-    root = tk.Tk()
-    root.withdraw()
-    return filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV files", "*.csv")])
+    llm = OllamaLLM(model="llama3.1", temperature=0.7)
+    output_parser = StrOutputParser()
+    chain = prompt | llm | output_parser
+    answer = chain.invoke({"message": combined_messages})
+    return answer
 
+# Streamlit app
 def main():
-    senders = ["+44 7440 443324", "+44 7888 318045"]  # Add the list of contacts that send "NEW SALE" messages
-    start_scraping_for_meetings_and_sales(senders)
+    st.title("WhatsApp Chat Scraper and Summarizer")
+
+    st.sidebar.header("Settings")
+    chat_name = st.sidebar.text_input("Enter the chat name:", value="Nov27")
+    submit_button = st.sidebar.button("Start Scraping")
+
+    if submit_button:
+        with st.spinner("Scraping the chat..."):
+            scraper = WhatsAppScraper()
+            messages = scraper.scrape_whatsapp_chat(chat_name)
+            scraper.close()
+
+            if messages:
+                st.success("Chat extraction done!")
+                st.write("Messages extracted:")
+                for msg in messages:
+                    st.write(f"- {msg}")
+
+                st.write("Summarizing messages...")
+                summary = summarize_messages(messages)
+                st.success("Summarization complete!")
+                st.write("Summary of messages:")
+                st.write(summary)
+            else:
+                st.warning("No messages found or an error occurred during scraping.")
 
 if __name__ == "__main__":
     main()
